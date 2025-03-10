@@ -9,9 +9,9 @@ import Header from "@/components/layout/Header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { doc, getDoc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, onSnapshot, deleteDoc, collection, query, where, getDocs, writeBatch, updateDoc } from "firebase/firestore";
 import { db } from "@/firebase/config";
-import { LogOut, X, Shield, UserMinus, Share2, Copy, Info, Lock ,Download} from "lucide-react";
+import { LogOut, X, Shield, UserMinus, Share2, Copy, Info, Lock, Download, Settings, AlertTriangle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
 import ChatInput from "@/components/rooms/ChatInput";
@@ -21,6 +21,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
@@ -34,7 +35,23 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
+  DialogFooter,
+  DialogClose,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 export default function RoomPage() {
   const params = useParams();
@@ -54,21 +71,33 @@ export default function RoomPage() {
   const [roomUsers, setRoomUsers] = useState([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState(true);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
+  const [showEndRoomDialog, setShowEndRoomDialog] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
   const [isCreator, setIsCreator] = useState(false);
   const [isModerator, setIsModerator] = useState(false);
-  const messagesEndRef = useRef(null);
-  const chatContainerRef = useRef(null);
-  const [autoScroll, setAutoScroll] = useState(true);
   const [scrollable, setScrollable] = useState(true);
   const [isExportingChat, setIsExportingChat] = useState(false);
+  const [roomSettings, setRoomSettings] = useState(false);
+  const [isMember, setIsMember] = useState(true);
+  const [updatingSettings, setUpdatingSettings] = useState(false);
   
-
+  // Room settings form state
+  const [settingsForm, setSettingsForm] = useState({
+    title: "",
+    description: "",
+    topic: "",
+    isPrivate: false,
+    maxParticipants: 0
+  });
+  
+  const messagesEndRef = useRef(null);
+  const chatContainerRef = useRef(null);
+  const membersContainerRef = useRef(null);
   const router = useRouter();
   const { toast } = useToast();
   const connectivityRef = useRef(null);
-  const membersContainerRef = useRef(null);
   const hasJoinedRef = useRef(false);
+  const [autoScroll, setAutoScroll] = useState(true);
 
   // Improved Firebase connectivity monitoring
   useEffect(() => {
@@ -100,7 +129,7 @@ export default function RoomPage() {
     // Add network status listeners as backup
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
-
+    
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
@@ -115,7 +144,7 @@ export default function RoomPage() {
   useEffect(() => {
     const checkRoomAndJoin = async () => {
       if (!user || loading || hasJoinedRef.current) return;
-
+      
       try {
         // Check if room exists and get initial data
         const roomDoc = await getDoc(doc(db, "rooms", id));
@@ -128,18 +157,40 @@ export default function RoomPage() {
           router.push("/");
           return;
         }
-
+        
         const roomData = roomDoc.data();
+        
+        // Check if user is a member of the room
+        if (Array.isArray(roomData.members) && !roomData.members.includes(user.uid)) {
+          setIsMember(false);
+          toast({
+            title: "Access Denied",
+            description: "You are no longer a member of this room.",
+            variant: "destructive",
+          });
+          router.push("/");
+          return;
+        }
+        
         // Set creator status early
         if (roomData.createdBy === user.uid) {
           setIsCreator(true);
         }
-
+        
         // Set moderator status early
         if (Array.isArray(roomData.moderators) && roomData.moderators.includes(user.uid)) {
           setIsModerator(true);
         }
-
+        
+        // Initialize settings form with current values
+        setSettingsForm({
+          title: roomData.title || "",
+          description: roomData.description || "",
+          topic: roomData.topic || "General",
+          isPrivate: roomData.isPrivate || false,
+          maxParticipants: roomData.maxParticipants || 0
+        });
+        
         // Only join if not already in room
         if (!currentRoom || currentRoom.id !== id) {
           hasJoinedRef.current = true;
@@ -161,11 +212,11 @@ export default function RoomPage() {
         router.push("/");
       }
     };
-
+    
     if (user && id && !loading) {
       checkRoomAndJoin();
     }
-
+    
     // Cleanup function - only leave room when actually navigating away from page
     return () => {
       // Only execute leaveRoom if we're navigating to a different page, not just reloading
@@ -182,11 +233,55 @@ export default function RoomPage() {
     if (currentRoom) {
       setIsCreator(currentRoom.createdBy === user?.uid);
       setIsModerator(
-        Array.isArray(currentRoom.moderators) &&
+        Array.isArray(currentRoom.moderators) && 
         currentRoom.moderators.includes(user?.uid)
+      );
+      setIsMember(
+        Array.isArray(currentRoom.members) && 
+        currentRoom.members.includes(user?.uid)
       );
     }
   }, [currentRoom, user]);
+
+  // Listen for changes to room membership
+  useEffect(() => {
+    if (!id || !user) return;
+    
+    const unsubscribe = onSnapshot(
+      doc(db, "rooms", id),
+      (doc) => {
+        if (doc.exists()) {
+          const roomData = doc.data();
+          // Check if user is still a member
+          const stillMember = Array.isArray(roomData.members) && roomData.members.includes(user.uid);
+          setIsMember(stillMember);
+          
+          if (!stillMember) {
+            // User was removed from the room
+            toast({
+              title: "Removed from Room",
+              description: "You have been removed from this room.",
+              variant: "destructive",
+            });
+            router.push("/");
+          }
+        } else {
+          // Room was deleted
+          toast({
+            title: "Room Closed",
+            description: "This room has been closed by its creator.",
+            variant: "info",
+          });
+          router.push("/");
+        }
+      },
+      (error) => {
+        console.error("Error listening to room:", error);
+      }
+    );
+    
+    return () => unsubscribe();
+  }, [id, user, router, toast]);
 
   // Fetch room users when currentRoom updates
   useEffect(() => {
@@ -197,8 +292,25 @@ export default function RoomPage() {
 
   // Scroll to bottom when messages update
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    if (autoScroll) {
+      scrollToBottom();
+    }
+  }, [messages, autoScroll]);
+
+  // Setup scroll event listeners for auto-scroll decision
+  useEffect(() => {
+    const chatContainer = chatContainerRef.current;
+    if (!chatContainer) return;
+
+    const handleScroll = () => {
+      // Check if user has scrolled up (manual scrolling)
+      const isAtBottom = chatContainer.scrollHeight - chatContainer.clientHeight <= chatContainer.scrollTop + 50;
+      setAutoScroll(isAtBottom);
+    };
+
+    chatContainer.addEventListener('scroll', handleScroll);
+    return () => chatContainer.removeEventListener('scroll', handleScroll);
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -216,7 +328,7 @@ export default function RoomPage() {
       const userPromises = currentRoom.members.map((uid) =>
         getDoc(doc(db, "users", uid))
       );
-
+      
       const userDocs = await Promise.all(userPromises);
       const users = userDocs
         .filter((doc) => doc.exists())
@@ -270,12 +382,24 @@ export default function RoomPage() {
   };
 
   const handleSendMessage = async (content) => {
+    // Check if user is still a member of the room
+    if (!isMember) {
+      toast({
+        title: "Cannot send message",
+        description: "You are no longer a member of this room.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
       // Create message index if not already created
       await sendMessage(content);
+      // Set auto-scroll to true whenever user sends a message
+      setAutoScroll(true);
     } catch (error) {
       console.error("Error sending message:", error);
-
+      
       // Handle Firebase index errors specifically
       if (error.code === "failed-precondition" && error.message.includes("requires an index")) {
         toast({
@@ -285,7 +409,7 @@ export default function RoomPage() {
         });
         return;
       }
-
+      
       toast({
         title: "Error sending message",
         description:
@@ -346,33 +470,72 @@ export default function RoomPage() {
     }
   };
 
-  const handleEndRoom = async () => {
+  const handleDeleteRoomData = async () => {
+    if (!isCreator) {
+      toast({
+        title: "Permission Denied",
+        description: "Only the room creator can delete this room.",
+        variant: "destructive"
+      });
+      return;
+    }
+    
     try {
+      setShowEndRoomDialog(false);
+      
+      // 1. Get all messages for this room
+      const messagesQuery = query(
+        collection(db, "messages"),
+        where("roomId", "==", id)
+      );
+      const messagesSnapshot = await getDocs(messagesQuery);
+      
+      // 2. Create a batch for deleting all messages
+      const batch = writeBatch(db);
+      messagesSnapshot.docs.forEach((doc) => {
+        batch.delete(doc.ref);
+      });
+      
+      // 3. Delete the room document
+      batch.delete(doc(db, "rooms", id));
+      
+      // 4. Execute the batch
+      await batch.commit();
+      
+      // 5. Notify all members through endRoom (updates context)
       await endRoom(id);
       hasJoinedRef.current = false;
+      
+      // 6. Redirect to home
       router.push("/");
+      
       toast({
-        title: "Room Ended",
-        description: "The room has been ended.",
+        title: "Room Deleted",
+        description: "The room and all its messages have been permanently deleted.",
+        variant: "success"
       });
     } catch (error) {
-      console.error("Error ending room:", error);
+      console.error("Error deleting room data:", error);
       toast({
-        title: "Error ending room",
-        description:
+        title: "Error deleting room",
+        description: 
           error.code === "unavailable" && !isOnline
-            ? "Offline: Room will end when you reconnect."
-            : error.message,
-        variant: "destructive",
+            ? "Offline: Cannot delete data while offline."
+            : "Failed to delete room data. Please try again.",
+        variant: "destructive"
       });
     }
   };
 
-  // Export feature
+  const handleEndRoom = () => {
+    // Open confirmation dialog
+    setShowEndRoomDialog(true);
+  };
+
   const handleExportChat = async () => {
     try {
       setIsExportingChat(true);
-
+      
       // Format messages for export
       const exportData = {
         roomTitle: currentRoom.title,
@@ -386,22 +549,22 @@ export default function RoomPage() {
           type: msg.type
         }))
       };
-
+      
       // Create a blob with the JSON data
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], {type: 'application/json'});
       const url = URL.createObjectURL(blob);
-
+      
       // Create a download link and trigger the download
       const a = document.createElement('a');
       a.href = url;
       a.download = `${currentRoom.title.replace(/\s+/g, '_')}_chat_export.json`;
       document.body.appendChild(a);
       a.click();
-
+      
       // Clean up
       URL.revokeObjectURL(url);
       document.body.removeChild(a);
-
+      
       toast({
         title: "Chat Exported",
         description: "Chat history has been exported successfully.",
@@ -440,6 +603,75 @@ export default function RoomPage() {
       });
     }
   };
+  
+  const handleSettingsChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setSettingsForm(prev => ({
+      ...prev,
+      [name]: type === 'checkbox' ? checked : value
+    }));
+  };
+  
+  const handleSaveSettings = async () => {
+    if (!isCreator && !isModerator) {
+      toast({
+        title: "Permission Denied",
+        description: "Only creators and moderators can update room settings.",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    try {
+      setUpdatingSettings(true);
+      
+      // Basic validation
+      if (!settingsForm.title.trim()) {
+        toast({
+          title: "Invalid Title",
+          description: "Room title cannot be empty.",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      // Prepare update data
+      const roomUpdates = {
+        title: settingsForm.title.trim(),
+        description: settingsForm.description.trim(),
+        topic: settingsForm.topic.trim() || "General",
+        isPrivate: settingsForm.isPrivate,
+        maxParticipants: parseInt(settingsForm.maxParticipants) || 0,
+        updatedAt: new Date()
+      };
+      
+      // Update room document
+      await updateDoc(doc(db, "rooms", id), roomUpdates);
+      
+      setRoomSettings(false);
+      toast({
+        title: "Settings Updated",
+        description: "Room settings have been updated successfully.",
+        variant: "success"
+      });
+      
+      // Add system message about updated settings
+      await sendMessage("Room settings were updated.", "system");
+      
+    } catch (error) {
+      console.error("Error updating room settings:", error);
+      toast({
+        title: "Update Failed",
+        description: 
+          error.code === "unavailable" && !isOnline
+            ? "Offline: Cannot update settings while offline."
+            : "Failed to update room settings. Please try again.",
+        variant: "destructive"
+      });
+    } finally {
+      setUpdatingSettings(false);
+    }
+  };
 
   const toggleScrollable = () => {
     setScrollable(!scrollable);
@@ -472,6 +704,13 @@ export default function RoomPage() {
             <p>You&apos;re offline. Using cached data. Actions will sync when you&apos;re back online.</p>
           </div>
         )}
+        
+        {!isMember && (
+          <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6">
+            <p>You have been removed from this room. You can no longer send messages.</p>
+          </div>
+        )}
+        
         <Card className="overflow-hidden flex flex-col flex-1">
           <div className="p-6 bg-primary/10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div className="flex items-center gap-2">
@@ -513,6 +752,17 @@ export default function RoomPage() {
             </div>
 
             <div className="flex gap-2">
+              {(isCreator || isModerator) && (
+                <Button 
+                  variant="outline" 
+                  onClick={() => setRoomSettings(true)}
+                  disabled={!isOnline}
+                >
+                  <Settings className="mr-2 h-4 w-4" />
+                  Room Settings
+                </Button>
+              )}
+              
               <Button onClick={handleShareRoom} variant="outline">
                 <Share2 className="mr-2 h-4 w-4" />
                 Share
@@ -535,10 +785,10 @@ export default function RoomPage() {
           <div className="grid grid-cols-1 md:grid-cols-[1fr_300px] flex-1 max-h-[calc(100vh-250px)]">
             {/* Chat Messages */}
             <div className="flex flex-col p-4 overflow-hidden">
-              <div
+              <div 
                 ref={chatContainerRef}
                 className="flex-1 overflow-y-auto mb-4 space-y-4 custom-scrollbar"
-                style={{
+                style={{ 
                   maxHeight: "calc(100vh - 310px)",
                   scrollBehavior: scrollable ? "smooth" : "auto"
                 }}
@@ -555,10 +805,11 @@ export default function RoomPage() {
                       {dateMessages.map((message) => (
                         <div
                           key={message.id}
-                          className={`flex ${message.senderId === user.uid
+                          className={`flex ${
+                            message.senderId === user.uid
                               ? "justify-end"
                               : "justify-start"
-                            } ${message.type === "system" ? "justify-center" : ""}`}
+                          } ${message.type === "system" ? "justify-center" : ""}`}
                         >
                           {message.type === "system" ? (
                             <div className="bg-muted px-3 py-1 rounded-full text-xs text-muted-foreground">
@@ -566,10 +817,11 @@ export default function RoomPage() {
                             </div>
                           ) : (
                             <div
-                              className={`flex max-w-[80%] ${message.senderId === user.uid
+                              className={`flex max-w-[80%] ${
+                                message.senderId === user.uid
                                   ? "flex-row-reverse"
                                   : "flex-row"
-                                } items-start gap-2`}
+                              } items-start gap-2`}
                             >
                               <Avatar className="h-8 w-8 mt-1">
                                 <AvatarImage
@@ -581,10 +833,11 @@ export default function RoomPage() {
                                 </AvatarFallback>
                               </Avatar>
                               <div
-                                className={`rounded-lg px-4 py-2 ${message.senderId === user.uid
+                                className={`rounded-lg px-4 py-2 ${
+                                  message.senderId === user.uid
                                     ? "bg-primary text-primary-foreground"
                                     : "bg-secondary"
-                                  }`}
+                                }`}
                               >
                                 <div className="flex items-center gap-2">
                                   <p className="text-xs font-medium">
@@ -614,10 +867,11 @@ export default function RoomPage() {
                 )}
                 <div ref={messagesEndRef} />
               </div>
+
               {!autoScroll && (
-                <Button
-                  variant="outline"
-                  size="sm"
+                <Button 
+                  variant="outline" 
+                  size="sm" 
                   className="mb-2 self-center"
                   onClick={() => {
                     setAutoScroll(true);
@@ -628,7 +882,10 @@ export default function RoomPage() {
                 </Button>
               )}
 
-              <ChatInput onSendMessage={handleSendMessage} disabled={!isOnline} />
+              <ChatInput 
+                onSendMessage={handleSendMessage} 
+                disabled={!isOnline || !isMember} 
+              />
             </div>
 
             {/* Room Members */}
@@ -643,10 +900,10 @@ export default function RoomPage() {
                 </div>
               ) : (
                 <div 
-                ref={membersContainerRef}
-                className="space-y-3 overflow-y-auto custom-scrollbar flex-1"
-                style={{ maxHeight: "calc(100vh - 350px)" }}
-              >
+                  ref={membersContainerRef}
+                  className="space-y-3 overflow-y-auto custom-scrollbar flex-1"
+                  style={{ maxHeight: "calc(100vh - 350px)" }}
+                >
                   {roomUsers.map((roomUser) => (
                     <div
                       key={roomUser.id}
@@ -657,188 +914,249 @@ export default function RoomPage() {
                         onClick={() => router.push(`/profile/${roomUser.id}`)}
                       >
                         <Avatar className="h-8 w-8">
-                          <AvatarImage
-                            src={roomUser.photoURL}
-                            alt={roomUser.displayName}
-                          />
-                          <AvatarFallback>
-                            {roomUser.displayName?.[0]?.toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <p className="text-sm font-medium">
-                            {roomUser.displayName}
-                          </p>
-                          <div className="flex items-center gap-1">
-                            {roomUser.id === currentRoom.createdBy && (
-                              <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full">
-                                Creator
-                              </span>
-                            )}
-                            {Array.isArray(currentRoom.moderators) &&
-                              currentRoom.moderators.includes(roomUser.id) &&
-                              roomUser.id !== currentRoom.createdBy && (
-                                <span className="text-xs bg-yellow-500/10 text-yellow-500 px-2 py-0.5 rounded-full">
-                                  Mod
-                                </span>
-                              )}
-                          </div>
-                        </div>
-                      </div>
+                        <AvatarImage
+  src={roomUser.photoURL}
+  alt={roomUser.displayName}
+/>
+<AvatarFallback>
+  {roomUser.displayName?.[0]?.toUpperCase()}
+</AvatarFallback>
+</Avatar>
+<div>
+  <p className="text-sm font-medium">
+    {roomUser.displayName}
+    {roomUser.id === user.uid && " (You)"}
+    {roomUser.id === currentRoom.createdBy && (
+      <Badge variant="outline" className="ml-2">
+        Creator
+      </Badge>
+    )}
+    {Array.isArray(currentRoom.moderators) &&
+      currentRoom.moderators.includes(roomUser.id) &&
+      roomUser.id !== currentRoom.createdBy && (
+        <Badge variant="outline" className="ml-2">
+          Moderator
+        </Badge>
+      )}
+  </p>
+</div>
+</div>
 
-                      {(isCreator || isModerator) &&
-                        roomUser.id !== user.uid && (
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 w-8 p-0"
-                                disabled={!isOnline}
-                              >
-                                <span className="sr-only">Open menu</span>
-                                <svg
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  className="h-4 w-4"
-                                >
-                                  <circle cx="12" cy="12" r="1" />
-                                  <circle cx="12" cy="5" r="1" />
-                                  <circle cx="12" cy="19" r="1" />
-                                </svg>
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              {isCreator &&
-                                Array.isArray(currentRoom.moderators) &&
-                                !currentRoom.moderators.includes(
-                                  roomUser.id
-                                ) && (
-                                  <DropdownMenuItem
-                                    onClick={() =>
-                                      handlePromoteUser(roomUser.id)
-                                    }
-                                  >
-                                    <Shield className="mr-2 h-4 w-4" />
-                                    <span>Make Moderator</span>
-                                  </DropdownMenuItem>
-                                )}
-                              <DropdownMenuItem
-                                onClick={() => handleRemoveUser(roomUser.id)}
-                              >
-                                <UserMinus className="mr-2 h-4 w-4" />
-                                <span>Remove from Room</span>
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        )}
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="mt-4">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleExportChat}
-                  className="w-full"
-                  disabled={isExportingChat}
-                >
-                  {isExportingChat ? (
-                    <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-current"></div>
-                  ) : (
-                    <>
-                      <Download className="mr-2 h-4 w-4" />
-                      Export Chat History
-                    </>
-                  )}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </Card>
-      </main>
+{(isCreator || (isModerator && roomUser.id !== currentRoom.createdBy)) && 
+  roomUser.id !== user.uid && (
+  <DropdownMenu>
+    <DropdownMenuTrigger asChild>
+      <Button variant="ghost" size="icon">
+        <Settings className="h-4 w-4" />
+      </Button>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent align="end">
+      {isCreator && !currentRoom.moderators?.includes(roomUser.id) && (
+        <DropdownMenuItem 
+          onClick={() => handlePromoteUser(roomUser.id)}
+          disabled={!isOnline}
+        >
+          <Shield className="mr-2 h-4 w-4" />
+          Make Moderator
+        </DropdownMenuItem>
+      )}
+      <DropdownMenuItem 
+        onClick={() => handleRemoveUser(roomUser.id)}
+        className="text-destructive"
+        disabled={!isOnline}
+      >
+        <UserMinus className="mr-2 h-4 w-4" />
+        Remove from Room
+      </DropdownMenuItem>
+    </DropdownMenuContent>
+  </DropdownMenu>
+)}
+</div>
+))}
+</div>
+)}
 
-      <Dialog open={showRoomInfo} onOpenChange={setShowRoomInfo}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Room Information</DialogTitle>
-            <DialogDescription>Details about this chat room</DialogDescription>
-          </DialogHeader>
+<div className="mt-4">
+  <Button 
+    variant="ghost" 
+    size="sm" 
+    onClick={handleExportChat}
+    className="w-full"
+    disabled={isExportingChat}
+  >
+    {isExportingChat ? (
+      <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-current"></div>
+    ) : (
+      <>
+        <Download className="mr-2 h-4 w-4" />
+        Export Chat History
+      </>
+    )}
+  </Button>
+</div>
+</div>
+</div>
+</Card>
+</main>
 
-          <div className="space-y-4 py-4">
-            <div>
-              <h3 className="font-medium mb-1">Title</h3>
-              <p>{currentRoom.title}</p>
-            </div>
-
-            {currentRoom.description && (
-              <div>
-                <h3 className="font-medium mb-1">Description</h3>
-                <p>{currentRoom.description}</p>
-              </div>
-            )}
-
-            <div>
-              <h3 className="font-medium mb-1">Topic</h3>
-              <p>{currentRoom.topic || "General"}</p>
-            </div>
-
-            <div>
-              <h3 className="font-medium mb-1">Created</h3>
-              <p>
-                {currentRoom.createdAt
-                  ? formatDistanceToNow(
-                    new Date(currentRoom.createdAt.seconds * 1000),
-                    { addSuffix: true }
-                  )
-                  : "Recently"}
-              </p>
-            </div>
-
-            <div>
-              <h3 className="font-medium mb-1">Room Type</h3>
-              <p>{currentRoom.isPrivate ? "Private" : "Public"}</p>
-            </div>
-
-            <div>
-              <h3 className="font-medium mb-1">Participants</h3>
-              <p>
-                {Array.isArray(currentRoom.members)
-                  ? currentRoom.members.length
-                  : 0}{" "}
-                / {currentRoom.maxParticipants || "Unlimited"}
-              </p>
-            </div>
-
-            <div>
-              <h3 className="font-medium mb-1">Room ID</h3>
-              <div className="flex items-center gap-2">
-                <code className="bg-muted p-1 rounded text-sm">{id}</code>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => {
-                    navigator.clipboard.writeText(id);
-                    toast({
-                      title: "Copied",
-                      description: "Room ID copied to clipboard",
-                    });
-                  }}
-                  aria-label="Copy Room ID"
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+{/* Room Info Dialog */}
+<Dialog open={showRoomInfo} onOpenChange={setShowRoomInfo}>
+  <DialogContent className="sm:max-w-md">
+    <DialogHeader>
+      <DialogTitle>Room Information</DialogTitle>
+      <DialogDescription>
+        Details about this chat room.
+      </DialogDescription>
+    </DialogHeader>
+    <div className="space-y-4">
+      <div>
+        <h3 className="font-medium">Room Title</h3>
+        <p>{currentRoom.title}</p>
+      </div>
+      <div>
+        <h3 className="font-medium">Description</h3>
+        <p>{currentRoom.description || "No description provided"}</p>
+      </div>
+      <div>
+        <h3 className="font-medium">Topic</h3>
+        <p>{currentRoom.topic || "General"}</p>
+      </div>
+      <div>
+        <h3 className="font-medium">Created</h3>
+        <div>
+          {currentRoom.createdAt && !isNaN(new Date(currentRoom.createdAt).getTime())
+            ? formatDistanceToNow(new Date(currentRoom.createdAt), {
+                addSuffix: true,
+              })
+            : "Unknown"}
+        </div>
+      </div>
+      <div>
+        <h3 className="font-medium">Visibility</h3>
+        <p>{currentRoom.isPrivate ? "Private Room" : "Public Room"}</p>
+      </div>
+      <div>
+        <h3 className="font-medium">Members</h3>
+        <p>{roomUsers.length} participants</p>
+      </div>
     </div>
-  );
+    <DialogFooter>
+      <Button variant="outline" onClick={() => setShowRoomInfo(false)}>
+        Close
+      </Button>
+      <Button onClick={handleShareRoom}>
+        <Share2 className="mr-2 h-4 w-4" />
+        Share
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+
+{/* End Room Dialog */}
+<AlertDialog open={showEndRoomDialog} onOpenChange={setShowEndRoomDialog}>
+  <AlertDialogContent>
+    <AlertDialogHeader>
+      <AlertDialogTitle>End this room?</AlertDialogTitle>
+      <AlertDialogDescription>
+        This action is irreversible. The room and all its messages will be permanently deleted for all participants.
+      </AlertDialogDescription>
+    </AlertDialogHeader>
+    <AlertDialogFooter>
+      <AlertDialogCancel>Cancel</AlertDialogCancel>
+      <AlertDialogAction onClick={handleDeleteRoomData}>
+        Yes, end this room
+      </AlertDialogAction>
+    </AlertDialogFooter>
+  </AlertDialogContent>
+</AlertDialog>
+
+{/* Room Settings Dialog */}
+<Dialog open={roomSettings} onOpenChange={setRoomSettings}>
+  <DialogContent className="sm:max-w-lg">
+    <DialogHeader>
+      <DialogTitle>Room Settings</DialogTitle>
+      <DialogDescription>
+        Customize room properties and permissions
+      </DialogDescription>
+    </DialogHeader>
+    
+    <div className="space-y-4 py-2">
+      <div className="space-y-2">
+        <Label htmlFor="title">Room Title</Label>
+        <Input 
+          id="title" 
+          name="title"
+          value={settingsForm.title} 
+          onChange={handleSettingsChange}
+          placeholder="Enter room title"
+        />
+      </div>
+      
+      <div className="space-y-2">
+        <Label htmlFor="description">Description</Label>
+        <Textarea 
+          id="description" 
+          name="description"
+          value={settingsForm.description} 
+          onChange={handleSettingsChange}
+          placeholder="Enter room description"
+          rows={3}
+        />
+      </div>
+      
+      <div className="space-y-2">
+        <Label htmlFor="topic">Topic</Label>
+        <Input 
+          id="topic" 
+          name="topic"
+          value={settingsForm.topic} 
+          onChange={handleSettingsChange}
+          placeholder="Enter room topic (e.g. Gaming, Technology, etc.)"
+        />
+      </div>
+      
+      <div className="space-y-2">
+        <Label htmlFor="maxParticipants">Maximum Participants (0 for unlimited)</Label>
+        <Input 
+          id="maxParticipants" 
+          name="maxParticipants"
+          type="number"
+          min="0"
+          value={settingsForm.maxParticipants} 
+          onChange={handleSettingsChange}
+        />
+      </div>
+      
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <Label htmlFor="isPrivate">Private Room</Label>
+          <p className="text-xs text-muted-foreground">Private rooms are only visible to invited members</p>
+        </div>
+        <Switch 
+          id="isPrivate" 
+          name="isPrivate"
+          checked={settingsForm.isPrivate} 
+          onCheckedChange={(checked) => setSettingsForm(prev => ({...prev, isPrivate: checked}))}
+        />
+      </div>
+    </div>
+    
+    <DialogFooter>
+      <Button variant="outline" onClick={() => setRoomSettings(false)}>
+        Cancel
+      </Button>
+      <Button onClick={handleSaveSettings} disabled={updatingSettings}>
+        {updatingSettings ? (
+          <span className="flex items-center gap-2">
+            <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-current"></div>
+            Saving...
+          </span>
+        ) : "Save Changes"}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+
+</div>
+);
 }
