@@ -1,0 +1,88 @@
+/* Ensure proper Tailwind directives */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base layer for CSS custom properties */
+@layer base {
+  :root {
+    --background: 0 0% 100%;        /* White */
+    --foreground: 240 10% 3.9%;     /* Very dark blue-gray */
+
+    --muted: 240 4.8% 95.9%;        /* Light gray-blue */
+    --muted-foreground: 240 3.8% 46.1%;  /* Medium gray-blue */
+
+    --popover: 0 0% 100%;          /* White */
+    --popover-foreground: 240 10% 3.9%;  /* Very dark blue-gray */
+
+    --card: 0 0% 100%;            /* White */
+    --card-foreground: 240 10% 3.9%;     /* Very dark blue-gray */
+
+    --border: 240 5.9% 90%;        /* Light gray-blue */
+    --input: 240 5.9% 90%;         /* Light gray-blue */
+
+    --primary: 264 67% 51%;        /* Purple */
+    --primary-foreground: 0 0% 98%; /* Near-white */
+
+    --secondary: 240 4.8% 95.9%;    /* Light gray-blue */
+    --secondary-foreground: 240 5.9% 10%;  /* Dark gray-blue */
+
+    --accent: 240 4.8% 95.9%;       /* Light gray-blue */
+    --accent-foreground: 240 5.9% 10%;    /* Dark gray-blue */
+
+    --destructive: 0 84.2% 60.2%;   /* Red */
+    --destructive-foreground: 0 0% 98%;   /* Near-white */
+
+    --ring: 240 5% 64.9%;          /* Medium blue-gray */
+    --radius: 0.5rem;              /* 8px radius */
+  }
+
+  /* Dark mode variables */
+  .dark {
+    --background: 240 10% 3.9%;     /* Very dark blue-gray */
+    --foreground: 0 0% 98%;         /* Near-white */
+
+    --muted: 240 3.7% 15.9%;        /* Dark gray-blue */
+    --muted-foreground: 240 5% 64.9%;    /* Medium blue-gray */
+
+    --popover: 240 10% 3.9%;        /* Very dark blue-gray */
+    --popover-foreground: 0 0% 98%; /* Near-white */
+
+    --card: 240 10% 3.9%;          /* Very dark blue-gray */
+    --card-foreground: 0 0% 98%;    /* Near-white */
+
+    --border: 240 3.7% 15.9%;       /* Dark gray-blue */
+    --input: 240 3.7% 15.9%;        /* Dark gray-blue */
+
+    --primary: 264 67% 51%;         /* Same purple as light mode */
+    --primary-foreground: 0 0% 98%; /* Near-white */
+
+    --secondary: 240 3.7% 15.9%;    /* Dark gray-blue */
+    --secondary-foreground: 0 0% 98%;     /* Near-white */
+
+    --accent: 240 4.8% 65.9%;       /* Medium blue-gray */
+    --accent-foreground: 0 0% 98%;  /* Near-white */
+
+    --destructive: 0 62.8% 30.6%;   /* Darker red */
+    --destructive-foreground: 0 0% 98%;   /* Near-white */
+
+    --ring: 240 4.9% 83.9%;         /* Light blue-gray */
+  }
+
+  /* Base styles */
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: system-ui, sans-serif;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+  }
+}
