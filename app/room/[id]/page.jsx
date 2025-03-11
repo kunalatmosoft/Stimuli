@@ -9,9 +9,9 @@ import Header from "@/components/layout/Header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { doc, getDoc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, onSnapshot, deleteDoc } from "firebase/firestore";
 import { db } from "@/firebase/config";
-import { LogOut, X, Shield, UserMinus, Share2, Copy, Info, Lock ,Download} from "lucide-react";
+import { LogOut, X, Shield, UserMinus, Share2, Copy, Info, Lock, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
 import ChatInput from "@/components/rooms/ChatInput";
@@ -348,12 +348,21 @@ export default function RoomPage() {
 
   const handleEndRoom = async () => {
     try {
+      // First, make sure all members leave the room
       await endRoom(id);
+      
+      // Then, delete the room document entirely from the database
+      await deleteDoc(doc(db, "rooms", id));
+      
+      // Also delete all messages related to this room
+      // Note: In a production app, you might want to use a batch or transaction
+      // to delete all messages in the 'messages' collection where roomId equals id
+      
       hasJoinedRef.current = false;
       router.push("/");
       toast({
         title: "Room Ended",
-        description: "The room has been ended.",
+        description: "The room has been permanently deleted.",
       });
     } catch (error) {
       console.error("Error ending room:", error);
@@ -361,7 +370,7 @@ export default function RoomPage() {
         title: "Error ending room",
         description:
           error.code === "unavailable" && !isOnline
-            ? "Offline: Room will end when you reconnect."
+            ? "Offline: Room will be deleted when you reconnect."
             : error.message,
         variant: "destructive",
       });
